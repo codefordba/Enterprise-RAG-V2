@@ -5,3 +5,5 @@ langchain-core>=0.2.0
 langchain-experimental>=0.0.60
 python-dotenv>=1.0.1
 requests>=2.32.0
+pandas>=2.2.0
+openpyxl>=3.1.0
