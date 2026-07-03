@@ -1,11 +1,11 @@
-# Enterprise-RAG: Multi-Tenant Knowledge Ingestion & Inference Console
+# Enterprise-RAG-V2: Multi-Tenant Knowledge Ingestion & Inference Console
 
 A production-grade, highly scalable, multi-tenant Retrieval-Augmented Generation (RAG) platform. The system enforces strict logical tenant partitioning inside a shared vector database, extracts visually complex borderless financial tables, and routes conversational inference dynamically to specialized model weights or cloud endpoints.
 
 ---
 
 ## 🎯 Objective
-Enterprise-RAG resolves the three primary constraints of standard RAG architectures in corporate networks:
+Enterprise-RAG-V2 resolves the three primary constraints of standard RAG architectures in corporate networks:
 1.  **Cross-Tenant Data Leakage**: Enforces strict departmental data boundaries (Finance, HR, Legal) inside a single vector pool using Qdrant HNSW payload keyword constraints, avoiding the administrative overhead of managing thousands of database collections.
 2.  **Structural Document Destruction**: Employs layout-aware visual element extraction (`pdfplumber`) to isolate grid balance sheets and borderless data blocks, mapping them into native Markdown grids before chunking.
 3.  **Credential & Configuration Exposure**: Integrates FIPS-compliant symmetric key encryption to store connection endpoints and API keys securely on disk, enabling on-the-fly model swapping.
@@ -13,8 +13,8 @@ Enterprise-RAG resolves the three primary constraints of standard RAG architectu
 ---
 
 ## 🛠️ The Tech Stack
-*   **Frontend & Ops Dashboard**: [Streamlit](https://streamlit.io/) (1.35+)
-*   **Vector Database**: [Qdrant](https://qdrant.tech/) (1.9+)
+*   **Frontend & Ops Dashboard**: [Streamlit](https://streamlit.io/) (1.58+)
+*   **Vector Database**: [Qdrant](https://qdrant.tech/) (1.18+)
 *   **Embeddings Compute Server**: HuggingFace [Text Embeddings Inference (TEI)](https://github.com/huggingface/text-embeddings-inference) (`BAAI/bge-large-en-v1.5`)
 *   **Structural Parsing**: [pdfplumber](https://github.com/jasonmc/pdfplumber) (layout element extraction)
 *   **Text Splitters**: [LangChain Experimental](https://github.com/langchain-ai/langchain) (Semantic Chunker)
@@ -46,69 +46,91 @@ Enterprise-RAG resolves the three primary constraints of standard RAG architectu
 
 ---
 
-## 🚀 How to Reproduce & Run the Application
+## 🚀 How to Build and Deploy the Environment
 
-Follow these steps to deploy and run the entire environment:
+### Method A: Fully Containerized Deploy using the `llm-infra-net` Bridge
+Follow these steps to build and launch all containers (UI, Qdrant, and TEI) manually inside a shared bridge network named **`llm-infra-net`**:
 
-### Step 1: Clone and Set Up Environment Variables
-Copy `.env.example` to create `.env` and fill in your connection variables:
-```bash
-cp .env.example .env
-```
-*Example `.env` configuration for Cloud Google Gemini:*
-```ini
-QDRANT_HOST=localhost
-QDRANT_PORT=6333
-COLLECTION_NAME=tenant_knowledge_base
-TEI_ENDPOINT=http://localhost:8080/embed
-CLIENT_BATCH_LIMIT=32
+1.  **Configure Environment Variables**:
+    Clone `.env.example` to create `.env` and fill in your connection variables (such as `LLM_API_KEY`):
+    ```bash
+    cp .env.example .env
+    ```
+2.  **Create local storage folders on host**:
+    ```bash
+    mkdir -p qdrant_storage embedding_cache sample_data
+    touch .enc_key model_profiles.enc tenant_registry.json
+    ```
+3.  **Create the custom Docker bridge network**:
+    ```bash
+    docker network create --driver bridge llm-infra-net
+    ```
+4.  **Launch Qdrant Container**:
+    ```bash
+    docker run -d \
+      --name qdrant-server \
+      --network llm-infra-net \
+      -p 6333:6333 -p 6334:6334 \
+      -v $(pwd)/qdrant_storage:/qdrant/storage \
+      --restart unless-stopped \
+      qdrant/qdrant:latest
+    ```
+5.  **Launch Embedding Server (TEI) Container**:
+    ```bash
+    docker run -d \
+      --name embedding-server \
+      --network llm-infra-net \
+      -p 8080:80 \
+      -v $(pwd)/embedding_cache:/data \
+      --restart unless-stopped \
+      ghcr.io/huggingface/text-embeddings-inference:cpu-arm64-latest \
+      --model-id BAAI/bge-large-en-v1.5 --max-client-batch-size 128
+    ```
+6.  **Build the Streamlit App Container**:
+    ```bash
+    docker build -t enterprise-rag-ui:latest .
+    ```
+7.  **Launch the Streamlit UI Container**:
+    ```bash
+    docker run -d \
+      --name streamlit-ui \
+      --network llm-infra-net \
+      -p 8501:8501 \
+      -v $(pwd)/.env:/app/.env \
+      -v $(pwd)/.enc_key:/app/.enc_key \
+      -v $(pwd)/model_profiles.enc:/app/model_profiles.enc \
+      -v $(pwd)/tenant_registry.json:/app/tenant_registry.json \
+      -e QDRANT_HOST=qdrant-server \
+      -e QDRANT_PORT=6333 \
+      -e TEI_ENDPOINT=http://embedding-server:80/embed \
+      --restart unless-stopped \
+      enterprise-rag-ui:latest
+    ```
 
-LLM_DEPLOYMENT_MODE=CLOUD
-LLM_API_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
-LLM_API_KEY=YOUR_GEMINI_API_KEY
-DEFAULT_MODEL_ID=gemini-1.5-flash
-```
+Streamlit UI will be live at `http://localhost:8501` and fully integrated with backend dependencies.
 
 ---
 
-### Step 2: Spin Up the Infrastructure Containers
-Launch the Vector Database (Qdrant) and Embedding Server (TEI) using Docker Compose:
-```bash
-docker compose up -d
-```
-Verify that the services are online:
-- **Qdrant**: `http://localhost:6333`
-- **TEI Core**: `http://localhost:8080/info`
+### Method B: Hybrid Local Deploy (Recommended for Development)
+Use this method if you wish to run the Streamlit UI locally on your host machine while running the database and embedding containers in Docker.
 
----
-
-### Step 3: Run the Streamlit Application UI
-
-#### Option A: Running Locally (Recommended for Development)
-1.  **Initialize Python Virtual Environment**:
+1.  **Start Database & Embedding Services**:
+    ```bash
+    docker compose up -d
+    ```
+2.  **Initialize Python Virtual Environment**:
     ```bash
     python3 -m venv .venv
     source .venv/bin/activate
     ```
-2.  **Install System Dependencies**:
+3.  **Install Host Package Dependencies**:
     ```bash
     pip install -r requirements.txt
     ```
-3.  **Launch the Streamlit Dashboard**:
+4.  **Launch the Streamlit Dashboard**:
+    Ensure the path resolver loads correctly:
     ```bash
-    streamlit run src/main.py
+    .venv/bin/streamlit run src/main.py
     ```
-    Open your browser to `http://localhost:8501`.
 
-#### Option B: Running via Docker
-Build and start the application container:
-```bash
-docker build -t enterprise-rag-app .
-docker run -d -p 8501:8501 \
-  -v $(pwd)/.env:/app/.env \
-  -v $(pwd)/.enc_key:/app/.enc_key \
-  -v $(pwd)/model_profiles.enc:/app/model_profiles.enc \
-  -v $(pwd)/tenant_registry.json:/app/tenant_registry.json \
-  --name rag-console enterprise-rag-app
-```
-*(Mounting files as volumes preserves your encryption keys and tenant settings on your host machine across container updates).*
+Open your browser to `http://localhost:8501`.
