@@ -1,11 +1,16 @@
 import json
 import urllib.request
 import urllib.error
+from qdrant_client import QdrantClient
 from src.config import Config
 
-class QdrantTenantManager:
+class QdrantManager:
     def __init__(self):
         self.base_url = f"http://{Config.QDRANT_HOST}:{Config.QDRANT_PORT}/collections/{Config.COLLECTION_NAME}"
+        self.client = QdrantClient(host=Config.QDRANT_HOST, port=Config.QDRANT_PORT)
+
+    def initialize_schema(self):
+        self.initialize_collection()
 
     def initialize_collection(self):
         print(f"🛠️ Configuring schema collection framework for: '{Config.COLLECTION_NAME}'...")
@@ -46,7 +51,12 @@ class QdrantTenantManager:
         except Exception as e:
             print(f"❌ Index configuration fault: {str(e)}")
 
+    def upsert_chunks(self, points):
+        self.client.upsert(
+            collection_name=Config.COLLECTION_NAME,
+            points=points
+        )
+
 if __name__ == "__main__":
-    Config.print_runtime_summary()
-    manager = QdrantTenantManager()
-    manager.initialize_collection()
+    manager = QdrantManager()
+    manager.initialize_schema()

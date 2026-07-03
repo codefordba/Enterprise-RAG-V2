@@ -12,7 +12,10 @@ logger = logging.getLogger("SemanticSplitter")
 class TEIEmbeddingClient:
     """Production-ready client wrapper targeting the decoupled Rust Inference container."""
     def __init__(self, api_url: str):
-        self.api_url = f"{api_url.rstrip('/')}/embed"
+        if api_url.endswith("/embed"):
+            self.api_url = api_url
+        else:
+            self.api_url = f"{api_url.rstrip('/')}/embed"
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         """Sends a text array to the TEI container, safely batched to avoid server limits."""

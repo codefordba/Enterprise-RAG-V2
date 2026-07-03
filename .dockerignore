@@ -1,0 +1,30 @@
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Python caching
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Local configuration overrides and secrets (do not bake into image)
+.env
+.enc_key
+model_profiles.enc
+tenant_registry.json
+
+# Local persistent database & cache mount data
+qdrant_storage/
+embedding_cache/
+sample_data/
+
+# Version Control
+.git/
+.gitignore
+
+# OS-specific files
+.DS_Store
+Thumbs.db

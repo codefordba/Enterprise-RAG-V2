@@ -22,7 +22,6 @@ class TenantIngestionPipeline:
             raise RuntimeError(f"Embedding compute core connection timed out: {str(e)}")
 
     def _check_content_hash_exists(self, content_hash: str) -> bool:
-        """Queries Qdrant to check if this exact file content signature is already stored."""
         url = f"http://{Config.QDRANT_HOST}:{Config.QDRANT_PORT}/collections/{Config.COLLECTION_NAME}/points/scroll"
         payload = {
             "limit": 1,
@@ -43,7 +42,6 @@ class TenantIngestionPipeline:
             return False
 
     def _purge_by_lineage(self, document_family: str, source_file: str):
-        """Purges any records belonging to this Document Family or sharing this filename."""
         url = f"http://{Config.QDRANT_HOST}:{Config.QDRANT_PORT}/collections/{Config.COLLECTION_NAME}/points/delete"
         payload = {
             "filter": {
@@ -68,21 +66,16 @@ class TenantIngestionPipeline:
                                          headers={"Content-Type": "application/json"}, method="POST")
             with urllib.request.urlopen(req) as response:
                 json.loads(response.read().decode("utf-8"))
-            print(f"🧹 Lineage Engine: Purged historical entries for Family: [{document_family}]")
-        except Exception as e:
-            print(f"⚠️ Lineage Engine Skip: {str(e)}")
+        except Exception:
+            pass
 
     def process_and_upsert(self, document_name: str, raw_pages: List[Dict[str, Any]], custom_family_key: str = None):
-        # 1. Compute Document Content Hash (Scenario 1 Protection)
         full_text_stream = "".join([p.get("text", "") + p.get("table_markdown", "") for p in raw_pages])
         doc_hash = hashlib.sha256(full_text_stream.encode("utf-8")).hexdigest()
         
         if self._check_content_hash_exists(doc_hash):
-            print("ℹ️ Ingestion Skipped: Identical content hash already exists inside this partition.")
             return "skipped_duplicate"
 
-        # 2. Establish Document Family Identifier (Scenario 3 Protection)
-        # Fall back to extracting the first structural header line if no manual input key exists
         if custom_family_key:
             doc_family = custom_family_key.strip().lower().replace(" ", "_")
         else:
@@ -92,10 +85,8 @@ class TenantIngestionPipeline:
             if not doc_family:
                 doc_family = "unassigned_family"
 
-        # 3. Purge older versions across matching lineage boundaries
         self._purge_by_lineage(document_family=doc_family, source_file=document_name)
 
-        # 4. Segment layout-aware chunks
         max_size = Config.CHUNK_MAX_SIZE
         overlap = Config.CHUNK_OVERLAP
         qdrant_points = []
@@ -115,7 +106,6 @@ class TenantIngestionPipeline:
                 end_pointer = start_pointer + max_size
                 chunk_slice = text_pool[start_pointer:end_pointer]
                 
-                # Fetch embedding vector coordinates
                 vector = self._get_tei_embeddings([chunk_slice])[0]
                 
                 qdrant_points.append({
@@ -127,7 +117,7 @@ class TenantIngestionPipeline:
                         "document_family": doc_family,
                         "content_hash": doc_hash,
                         "page_number": p_num,
-                        "text_content": chunk_slice
+                        "document_text": chunk_slice
                     }
                 })
                 start_pointer += (max_size - overlap)
@@ -135,7 +125,6 @@ class TenantIngestionPipeline:
         if not qdrant_points:
             return "no_valid_content"
 
-        # 5. Commit point array matrix directly into Qdrant index layouts
         upsert_url = f"http://{Config.QDRANT_HOST}:{Config.QDRANT_PORT}/collections/{Config.COLLECTION_NAME}/points?wait=true"
         req = urllib.request.Request(
             upsert_url, data=json.dumps({"points": qdrant_points}).encode("utf-8"),

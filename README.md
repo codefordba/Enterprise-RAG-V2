@@ -1,46 +1,114 @@
-# Enterprise-RAG
+# Enterprise-RAG: Multi-Tenant Knowledge Ingestion & Inference Console
 
-Enterprise-RAG
-A production-grade, highly scalable, multi-tenant Retrieval-Augmented Generation (RAG) platform. This system enforces cryptographic data isolation across corporate tenant partitions sharing a single vector database collection, handles complex data layouts like borderless financial tables, and routes context queries to a dynamic Multi-LoRA inference engine running on a unified base LLM model.
+A production-grade, highly scalable, multi-tenant Retrieval-Augmented Generation (RAG) platform. The system enforces strict logical tenant partitioning inside a shared vector database, extracts visually complex borderless financial tables, and routes conversational inference dynamically to specialized model weights or cloud endpoints.
 
-🏢 Why "Enterprise" RAG? The Problem vs. The Solution
-Standard or naive RAG architectures suffer from three critical flaws that make them unviable for production deployments in enterprise environments:
+---
 
-Cross-Tenant Data Leaks: Storing corporate records for different business domains (Finance, HR, Legal) in a common vector pool can result in compliance violations if query embeddings leak records across domain boundaries.
+## 🎯 Objective
+Enterprise-RAG resolves the three primary constraints of standard RAG architectures in corporate networks:
+1.  **Cross-Tenant Data Leakage**: Enforces strict departmental data boundaries (Finance, HR, Legal) inside a single vector pool using Qdrant HNSW payload keyword constraints, avoiding the administrative overhead of managing thousands of database collections.
+2.  **Structural Document Destruction**: Employs layout-aware visual element extraction (`pdfplumber`) to isolate grid balance sheets and borderless data blocks, mapping them into native Markdown grids before chunking.
+3.  **Credential & Configuration Exposure**: Integrates FIPS-compliant symmetric key encryption to store connection endpoints and API keys securely on disk, enabling on-the-fly model swapping.
 
-Structural Document Destruction: Standard parsing splits PDFs by arbitrary character lengths, scrambling formatting blocks and corrupting borderless grid data (like balance sheets).
+---
 
-GPU Resource Crashing (VRAM Exhaustion): Deploying individual fine-tuned LLMs for each department requires immense VRAM footprint allocations, resulting in high infrastructure overhead and frequent Out-of-Memory (OOM) failures.
+## 🛠️ The Tech Stack
+*   **Frontend & Ops Dashboard**: [Streamlit](https://streamlit.io/) (1.35+)
+*   **Vector Database**: [Qdrant](https://qdrant.tech/) (1.9+)
+*   **Embeddings Compute Server**: HuggingFace [Text Embeddings Inference (TEI)](https://github.com/huggingface/text-embeddings-inference) (`BAAI/bge-large-en-v1.5`)
+*   **Structural Parsing**: [pdfplumber](https://github.com/jasonmc/pdfplumber) (layout element extraction)
+*   **Text Splitters**: [LangChain Experimental](https://github.com/langchain-ai/langchain) (Semantic Chunker)
+*   **Symmetric Encryption**: Python `cryptography` (FIPS-compliant Fernet AES-128 encryption)
+*   **Data Layout Parsing**: `pandas` & `openpyxl` (Excel spreadsheets indexing)
 
-Enterprise-RAG solves these constraints through algorithmic and architectural modifications:
+---
 
-Logical Multi-Tenancy via Payload Filtering: Enforces strict tenant partitioning inside a single Qdrant collection using HNSW payload graph overrides, eliminating cross-domain leakage without the infrastructure overhead of managing thousands of distinct database collections.
+## 🏛️ Features
 
-Layout-Aware Parsing: Isolates tabular structures visually and maps them into native markdown grid strings before vectorization.
+### 1. SandyGPT Conversational Workspace
+*   A ChatGPT-style conversational chat console.
+*   Enforces direct model dialogue (non-RAG) with adjustable parameters (temperature set to `0.7` for fluent dialog).
+*   Maintains conversation history isolated per tenant.
 
-Dynamic Multi-LoRA Serving: Serves a single INT8-quantized base foundation model in memory, dynamically applying lightweight specialized adapter matrices on a per-request basis.
+### 2. Grounded Query Playground
+*   Retrieval-scoped sandbox workspace utilizing tenant payload restrictions.
+*   Instructs the LLM under strict system grounding guidelines (prevents background weight hallucinations; answers only from context).
+*   Renders clickable citation audit cards linking directly to the source file, page number, and vector similarity ranking score.
 
-## Features
+### 3. Document Processing Panel
+*   Layout-aware visual document ingestion supporting PDFs and Excel Workbooks (`.xlsx`, `.xls`).
+*   Extracts borderless spreadsheet matrices and formats them to Markdown grids, appending them to target semantic chunks.
+*   Has content hash checks to skip duplicate ingestion and lineage checks to purge old versions.
 
-- Layout-aware PDF parsing
-- Semantic chunking
-- Qdrant Vector Database
-- Multi-tenant architecture
-- Streamlit-based UI
-- Docker deployment
-- Environment-based configuration
+### 4. Tenant Administration & Model Profiles Directory
+*   **On-The-Fly Swapping**: Allows registration of named connection profiles (local vLLM endpoint vs Cloud Gemini API) and saves them in encrypted format (`model_profiles.enc`) using a secure local key file (`.enc_key`).
+*   **Metadata Registry**: Persists active tenant maps in `tenant_registry.json` so tenant spaces are preserved across restarts.
 
-## Project Structure
+---
 
+## 🚀 How to Reproduce & Run the Application
+
+Follow these steps to deploy and run the entire environment:
+
+### Step 1: Clone and Set Up Environment Variables
+Copy `.env.example` to create `.env` and fill in your connection variables:
+```bash
+cp .env.example .env
 ```
-Enterprise-RAG/
-├── .env.example
-├── docker-compose.yml
-├── README.md
-├── requirements.txt
-└── src/
+*Example `.env` configuration for Cloud Google Gemini:*
+```ini
+QDRANT_HOST=localhost
+QDRANT_PORT=6333
+COLLECTION_NAME=tenant_knowledge_base
+TEI_ENDPOINT=http://localhost:8080/embed
+CLIENT_BATCH_LIMIT=32
+
+LLM_DEPLOYMENT_MODE=CLOUD
+LLM_API_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+LLM_API_KEY=YOUR_GEMINI_API_KEY
+DEFAULT_MODEL_ID=gemini-1.5-flash
 ```
 
-## Status
+---
 
-🚧 Project under active development.
+### Step 2: Spin Up the Infrastructure Containers
+Launch the Vector Database (Qdrant) and Embedding Server (TEI) using Docker Compose:
+```bash
+docker compose up -d
+```
+Verify that the services are online:
+- **Qdrant**: `http://localhost:6333`
+- **TEI Core**: `http://localhost:8080/info`
+
+---
+
+### Step 3: Run the Streamlit Application UI
+
+#### Option A: Running Locally (Recommended for Development)
+1.  **Initialize Python Virtual Environment**:
+    ```bash
+    python3 -m venv .venv
+    source .venv/bin/activate
+    ```
+2.  **Install System Dependencies**:
+    ```bash
+    pip install -r requirements.txt
+    ```
+3.  **Launch the Streamlit Dashboard**:
+    ```bash
+    streamlit run src/main.py
+    ```
+    Open your browser to `http://localhost:8501`.
+
+#### Option B: Running via Docker
+Build and start the application container:
+```bash
+docker build -t enterprise-rag-app .
+docker run -d -p 8501:8501 \
+  -v $(pwd)/.env:/app/.env \
+  -v $(pwd)/.enc_key:/app/.enc_key \
+  -v $(pwd)/model_profiles.enc:/app/model_profiles.enc \
+  -v $(pwd)/tenant_registry.json:/app/tenant_registry.json \
+  --name rag-console enterprise-rag-app
+```
+*(Mounting files as volumes preserves your encryption keys and tenant settings on your host machine across container updates).*

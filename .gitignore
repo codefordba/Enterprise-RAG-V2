@@ -6,8 +6,11 @@ __pycache__/
 .venv/
 venv/
 
-# Environment Variables
+# Environment Variables & Secrets
 .env
+.enc_key
+model_profiles.enc
+tenant_registry.json
 
 # macOS
 .DS_Store
