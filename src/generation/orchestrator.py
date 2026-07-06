@@ -120,8 +120,13 @@ class ContextOrchestrator:
         except Exception as e:
             return {"status": "error", "message": f"Modular Inference routing path failure: {str(e)}"}
 
-    def generate_summary(self, document_name: str, full_text_content: str, summary_length: str, llm_overrides: Dict[str, Any] = None) -> Dict[str, Any]:
+    def generate_summary(self, document_name: str, full_text_content: str, summary_length: str, max_tokens: int = 3000, max_context_chars: int = 300000, llm_overrides: Dict[str, Any] = None) -> Dict[str, Any]:
         start_time = time.time()
+        
+        truncated_content = full_text_content[:max_context_chars]
+        if len(full_text_content) > max_context_chars:
+            print(f"⚠️ Truncating document context from {len(full_text_content)} to {max_context_chars} characters.")
+
         system_instruction = (
             "You are an expert corporate analyst.\n"
             "Your task is to analyze the provided document and generate a highly professional executive summary.\n"
@@ -145,10 +150,10 @@ class ContextOrchestrator:
             "model": target_model,
             "messages": [
                 {"role": "system", "content": system_instruction},
-                {"role": "user", "content": f"Document Title: {document_name}\n\nFull Document Content:\n{full_text_content}"}
+                {"role": "user", "content": f"Document Title: {document_name}\n\nFull Document Content:\n{truncated_content}"}
             ],
             "temperature": 0.2,
-            "max_tokens": 1500
+            "max_tokens": max_tokens
         }
 
         request_headers = {"Content-Type": "application/json"}
@@ -157,16 +162,70 @@ class ContextOrchestrator:
 
         try:
             req = urllib.request.Request(vllm_endpoint, data=json.dumps(vllm_payload).encode("utf-8"), headers=request_headers, method="POST")
-            with urllib.request.urlopen(req, timeout=90) as response:
+            with urllib.request.urlopen(req, timeout=300) as response:
                 vllm_res = json.loads(response.read().decode("utf-8"))
+                summary_text = vllm_res["choices"][0]["message"]["content"]
+                if len(full_text_content) > max_context_chars:
+                    summary_text += f"\n\n---\n*⚠️ Note: The document was truncated to the first {max_context_chars:,} characters to comply with the model's context window size limit.*"
                 return {
                     "status": "success",
-                    "summary": vllm_res["choices"][0]["message"]["content"],
+                    "summary": summary_text,
                     "latency_seconds": round(time.time() - start_time, 3),
                     "token_metrics": vllm_res.get("usage", {})
                 }
         except urllib.error.HTTPError as e:
             error_body = e.read().decode("utf-8")
+            
+            # Smart Auto-Recovery for Context Length Errors
+            try:
+                error_json = json.loads(error_body)
+                err_msg = error_json.get("error", {}).get("message", "")
+                
+                if "maximum context length" in err_msg.lower() or "context length" in err_msg.lower() or "too long" in err_msg.lower():
+                    import re
+                    max_ctx_match = re.search(r"maximum context length is (\d+)", err_msg)
+                    input_tok_match = re.search(r"(?:contains at least|resulted in|prompt contains) (\d+)", err_msg)
+                    
+                    if max_ctx_match and input_tok_match:
+                        max_ctx = int(max_ctx_match.group(1))
+                        input_tok = int(input_tok_match.group(1))
+                        # Use 150 tokens safety margin for chat template/formatting overhead
+                        safe_max_tokens = max_ctx - input_tok - 150
+                        
+                        if safe_max_tokens >= 256:
+                            print(f"🔄 Auto-Recovery: Prompt tokens ({input_tok}) + requested output ({max_tokens}) exceeds max context ({max_ctx}). Retrying with adjusted max_tokens={safe_max_tokens}...")
+                            vllm_payload["max_tokens"] = safe_max_tokens
+                            
+                            try:
+                                req_retry = urllib.request.Request(vllm_endpoint, data=json.dumps(vllm_payload).encode("utf-8"), headers=request_headers, method="POST")
+                                with urllib.request.urlopen(req_retry, timeout=300) as response_retry:
+                                    vllm_res_retry = json.loads(response_retry.read().decode("utf-8"))
+                                    summary_text_retry = vllm_res_retry["choices"][0]["message"]["content"]
+                                    if len(full_text_content) > max_context_chars:
+                                        summary_text_retry += f"\n\n---\n*⚠️ Note: The document was truncated to the first {max_context_chars:,} characters to comply with the model's context window size limit.*"
+                                    return {
+                                        "status": "success",
+                                        "summary": summary_text_retry,
+                                        "latency_seconds": round(time.time() - start_time, 3),
+                                        "token_metrics": vllm_res_retry.get("usage", {})
+                                    }
+                            except Exception as retry_err:
+                                print(f"⚠️ Retry with adjusted max_tokens failed: {str(retry_err)}. Falling back to context shrinking.")
+                    
+                    # Fallback recursive shrink if numbers couldn't be parsed, if input tokens alone exceed limit, or if the token-adjusted retry failed
+                    shrunk_chars = int(max_context_chars * 0.6)
+                    print(f"🔄 Auto-Recovery: Input context too large or retry failed. Retrying with reduced input limit {shrunk_chars} chars...")
+                    return self.generate_summary(
+                        document_name=document_name,
+                        full_text_content=full_text_content,
+                        summary_length=summary_length,
+                        max_tokens=max_tokens,
+                        max_context_chars=shrunk_chars,
+                        llm_overrides=llm_overrides
+                    )
+            except Exception as recovery_error:
+                print(f"⚠️ Auto-recovery attempt failed: {str(recovery_error)}")
+
             return {"status": "error", "message": f"Summarization Engine Rejection [{e.code}]: {error_body}"}
         except Exception as e:
             return {"status": "error", "message": f"Summarization pipeline failure: {str(e)}"}
