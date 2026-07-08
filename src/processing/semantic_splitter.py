@@ -46,12 +46,19 @@ class SemanticProcessingEngine:
         self.embedder = TEIEmbeddingClient(settings.EMBEDDING_API_URL)
         self.splitter = SemanticChunker(self.embedder, min_chunk_size=100)
 
-    def generate_points(self, raw_elements: List[Dict[str, Any]], tenant_id: str, filename: str) -> List[PointStruct]:
+    def generate_points(self, raw_elements: List[Dict[str, Any]], tenant_id: str, filename: str, document_family: str = None, content_hash: str = None, document_version: str = None) -> List[PointStruct]:
         """Slices structural elements and fetches high-density vector profiles via REST."""
         processed_points = []
+        chunk_index = 0
         
         for element in raw_elements:
-            chunks = self.splitter.split_text(element["content"])
+            # For tables, do not split them semantically as they represent structured grid balances.
+            # Keep the table structure intact as a single semantic chunk.
+            if element["type"] == "table":
+                chunks = [element["content"]]
+            else:
+                chunks = self.splitter.split_text(element["content"])
+                
             if not chunks:
                 continue
                 
@@ -59,16 +66,25 @@ class SemanticProcessingEngine:
             embeddings = self.embedder.embed_documents(chunks)
             
             for idx, chunk_str in enumerate(chunks):
+                # Deterministic ID generation using uuid.uuid5 with a composite namespace key
+                seed_str = f"{tenant_id}_{document_family or 'unassigned_family'}_{document_version or '1.0'}_{chunk_index}"
+                deterministic_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, seed_str))
+                chunk_index += 1
+                
                 processed_points.append(
                     PointStruct(
-                        id=str(uuid.uuid4()),
+                        id=deterministic_id,
                         vector=embeddings[idx],
                         payload={
                             "tenant_id": tenant_id,
                             "document_text": chunk_str,
                             "chunk_type": element["type"],
                             "page_number": element["page"],
-                            "source_file": filename
+                            "source_file": filename,
+                            "document_family": document_family or "unassigned_family",
+                            "document_version": document_version or "1.0",
+                            "content_hash": content_hash or "",
+                            "is_latest": True
                         }
                     )
                 )

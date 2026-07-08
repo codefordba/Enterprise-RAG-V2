@@ -29,6 +29,10 @@ class MultiTenantQueryEngine:
                         FieldCondition(
                             key="tenant_id", 
                             match=MatchValue(value=tenant_id)
+                        ),
+                        FieldCondition(
+                            key="is_latest", 
+                            match=MatchValue(value=True)
                         )
                     ]
                 ),

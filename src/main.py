@@ -8,6 +8,19 @@ import json
 import ssl
 from typing import Dict, Any, List
 from src.config import Config
+import importlib
+import src.processing.ingest_pipeline
+import src.processing.semantic_splitter
+import src.processing.layout_parser
+import src.database.query_engine
+import src.generation.orchestrator
+
+importlib.reload(src.processing.ingest_pipeline)
+importlib.reload(src.processing.semantic_splitter)
+importlib.reload(src.processing.layout_parser)
+importlib.reload(src.database.query_engine)
+importlib.reload(src.generation.orchestrator)
+
 from src.generation.orchestrator import ContextOrchestrator
 from src.processing.ingest_pipeline import TenantIngestionPipeline
 from src.database.secure_storage import SecureStorageManager
@@ -384,54 +397,56 @@ class CoreOperationsCenterApp:
             file_ext = uploaded_file.name.split(".")[-1].lower()
             st.info(f"Asset Loaded: `{uploaded_file.name}` ({uploaded_file.size / 1024:.2f} KB)")
             suggested_family = uploaded_file.name.split(".")[0].split("_v")[0].split("202")[0].strip("_").lower()
-            ui_family_key = st.text_input("📋 Document Lineage Identifier / Family Tracking Key:", value=suggested_family)
+            ui_family_key = st.text_input("📋 Document Lineage Identifier / Family Tracking Key (Logical Type):", value=suggested_family)
+            ui_document_version = st.text_input("📋 Document Version / Year (e.g. 2026, v1.0):", value="1.0").strip()
             
+            # Retrieve list of existing documents in this tenant space
+            pipeline = TenantIngestionPipeline(tenant_id=st.session_state.current_tenant)
+            existing_docs = pipeline.get_tenant_documents()
+            
+            if existing_docs:
+                replace_target = st.selectbox(
+                    "🔄 Select existing document lineage to overwrite (leave as 'New Document' to upload as new):",
+                    options=["New Document"] + existing_docs,
+                    help="Select a stale document lineage family from the database to mark as inactive and overwrite it with this version."
+                )
+            else:
+                replace_target = "New Document"
+
             if st.button("⚡ Start Layout-Aware Vector Ingestion", type="primary"):
-                raw_pages = []
-                if file_ext == "pdf":
-                    with st.spinner("Extracting multi-page text and tabular layers..."):
-                        import pdfplumber
-                        with pdfplumber.open(uploaded_file) as pdf:
-                            for idx, page in enumerate(pdf.pages, 1):
-                                text_body = page.extract_text() or ""
-                                table_md_accumulate = []
-                                tables = page.extract_tables() or []
-                                for tbl in tables:
-                                    if not tbl: continue
-                                    cleaned_rows = [[str(cell).strip() if cell is not None else "" for cell in r] for r in tbl]
-                                    if len(cleaned_rows) > 1:
-                                        headers = cleaned_rows[0]
-                                        m_str = f"| {' | '.join(headers)} |\n| {' | '.join(['---'] * len(headers))} |\n"
-                                        for row in cleaned_rows[1:]:
-                                            m_str += f"| {' | '.join(row)} |\n"
-                                        table_md_accumulate.append(m_str)
-                                raw_pages.append({"page_number": idx, "text": text_body, "table_markdown": "\n\n".join(table_md_accumulate)})
-
-                elif file_ext in ["xlsx", "xls"]:
-                    with st.spinner("Parsing workbook layers and layout grids..."):
-                        import pandas as pd
-                        excel_workbook = pd.ExcelFile(uploaded_file)
-                        for sheet_idx, sheet_name in enumerate(excel_workbook.sheet_names, 1):
-                            df = excel_workbook.parse(sheet_name).fillna("")
-                            if df.empty: continue
-                            headers = [str(col).strip() for col in df.columns]
-                            md_grid = f"### SPREADSHEET WORKBOOK TAB: {sheet_name.upper()}\n| {' | '.join(headers)} |\n| {' | '.join(['---'] * len(headers))} |\n"
-                            for _, row in df.iterrows():
-                                md_grid += f"| {' | '.join([str(val).strip() for val in row.values])} |\n"
-                            raw_pages.append({"page_number": sheet_idx, "text": f"Workbook worksheet tab: {sheet_name}.", "table_markdown": md_grid})
-
-                if not raw_pages:
-                    st.warning("No usable records discovered inside the uploaded asset.")
-                    return
-
-                with st.spinner("⚙️ Evaluating lineage indexes and executing atomic updates..."):
-                    pipeline = TenantIngestionPipeline(tenant_id=st.session_state.current_tenant)
-                    status = pipeline.process_and_upsert(document_name=uploaded_file.name, raw_pages=raw_pages, custom_family_key=ui_family_key)
+                progress_bar = st.progress(0.0)
+                status_text = st.empty()
+                
+                def update_ingest_progress(message: str, progress: float):
+                    status_text.markdown(f"**Current Ingestion Phase**: {message}")
+                    progress_bar.progress(progress)
+                
+                try:
+                    status = pipeline.process_and_upsert(
+                        document_name=uploaded_file.name,
+                        file_source=uploaded_file,
+                        custom_family_key=ui_family_key,
+                        target_to_replace=None if replace_target == "New Document" else replace_target,
+                        document_version=ui_document_version,
+                        progress_callback=update_ingest_progress
+                    )
+                    status_text.empty()
+                    progress_bar.empty()
+                    
                     if status == "skipped_duplicate":
                         st.warning("ℹ️ System Event: Content match detected. Ingestion bypassed.")
+                    elif status == "no_valid_content":
+                        st.warning("⚠️ No usable records or layout elements discovered inside the uploaded asset.")
+                    elif status == "updated_version":
+                        st.success(f"🔄 Success! Existing asset '{uploaded_file.name if replace_target == 'New Document' else replace_target}' was found in the database. The stale version was purged, and the new updated version was ingested successfully.")
+                        st.rerun()
                     elif status == "ingested_successfully":
                         st.success(f"🎉 Success! Asset '{uploaded_file.name}' mapped into lineage tracking path [{ui_family_key.upper()}].")
                         st.rerun()
+                except Exception as e:
+                    status_text.empty()
+                    progress_bar.empty()
+                    st.error(f"❌ Ingestion pipeline fault: {str(e)}")
 
     def render_summarization_tab(self):
         st.header("📝 Executive Document Summarization Console")
@@ -617,6 +632,253 @@ class CoreOperationsCenterApp:
                     
                     st.rerun()
 
+    def render_rag_assessment_tab(self):
+        st.header("📊 RAG Assessment & Evaluation Console")
+        st.markdown(
+            """
+            <div class="sidebar-section" style="margin-bottom: 1.5rem; background: rgba(99, 102, 241, 0.1); border-left: 4px solid #6366f1;">
+                <div class="sidebar-section-title" style="color: #818cf8; font-size: 0.95rem;">🔬 Benchmarking Framework: Ragas (LLM-as-a-Judge)</div>
+                <p style="color: #e2e8f0; font-size: 0.9rem; margin-top: 0.4rem; margin-bottom: 0.4rem; line-height: 1.5;">
+                    This module utilizes the industry-standard <b>Ragas</b> (Retrieval Augmented Generation Assessment) evaluation framework. 
+                    It operates by executing your RAG query pipeline to fetch context and generate answers, then instructs an <b>LLM-as-a-Judge</b> (using the active connection profile) to audit the responses.
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        # Explanation for Score Fluctuations
+        with st.expander("❓ Why do scores fluctuate slightly between runs on the same dataset?", expanded=False):
+            st.markdown(
+                """
+                ### 🔄 Understanding Score Variance in LLM-Based Evaluation
+                If you run evaluations multiple times on the same dataset, you may observe slight changes in scores. This is expected behavior due to:
+                
+                1. **Probabilistic Judgments**: Ragas does not use simple keyword matching. It prompts the judge LLM to parse answers and isolate claims. Even with the judge's temperature set to `0.0`, cloud model hosting endpoints (like Gemini) exhibit small non-deterministic behaviors due to parallel decodings.
+                2. **Statement Extraction Ratios**: The judge LLM extracts statements from the answer. If the model parses the output into 4 statements in run A, and 5 slightly different statements in run B, the fractional score (e.g., supported statements divided by total statements) will change.
+                3. **Answer Relevancy Question Generation**: To compute *Answer Relevance*, the judge LLM generates 3 synthetic questions that might lead to the generated answer, then matches them against the original query using vector embeddings. The question generation step introduces small variations.
+                
+                *Recommendation: For production evaluation, run 3–5 runs and average the results to establish a baseline.*
+                """
+            )
+
+        # Ensure session state variables exist
+        if "loaded_test_set" not in st.session_state:
+            st.session_state.loaded_test_set = None
+        if "evaluation_results" not in st.session_state:
+            st.session_state.evaluation_results = None
+
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.subheader("📋 1. Load Test Dataset")
+            data_source = st.radio(
+                "Select Test Set Source:",
+                options=["Upload Ground-Truth CSV", "Generate Synthetic Test Set (via LLM)"],
+                horizontal=True
+            )
+
+            if data_source == "Upload Ground-Truth CSV":
+                uploaded_csv = st.file_uploader(
+                    "Upload CSV with 'question' and 'ground_truth' columns:",
+                    type=["csv"],
+                    key="eval_csv_uploader"
+                )
+                if uploaded_csv is not None:
+                    import pandas as pd
+                    try:
+                        df = pd.read_csv(uploaded_csv)
+                        if "question" not in df.columns or "ground_truth" not in df.columns:
+                            st.error("❌ Invalid CSV format: Must contain 'question' and 'ground_truth' columns.")
+                        else:
+                            st.session_state.loaded_test_set = df[["question", "ground_truth"]].to_dict(orient="records")
+                            st.success(f"✅ Loaded {len(st.session_state.loaded_test_set)} ground-truth QA cases from CSV.")
+                    except Exception as e:
+                        st.error(f"❌ Failed to parse CSV: {str(e)}")
+            else:
+                num_to_gen = st.number_input(
+                    "Number of QA pairs to synthesize:",
+                    min_value=2,
+                    max_value=20,
+                    value=5,
+                    step=1
+                )
+                if st.button("⚡ Synthesize QA Test Set", type="primary", use_container_width=True):
+                    with st.spinner("🧠 Scrolling vector index and generating synthetic questions/ground truth answers..."):
+                        from src.evaluation.rag_evaluator import RAGEvaluator
+                        evaluator = RAGEvaluator(llm_overrides=st.session_state.llm_overrides)
+                        test_cases = evaluator.generate_synthetic_test_set(
+                            tenant_id=st.session_state.current_tenant,
+                            count=num_to_gen
+                        )
+                        if not test_cases:
+                            st.warning("⚠️ No documents/points found in this tenant workspace to generate questions from.")
+                        else:
+                            st.session_state.loaded_test_set = test_cases
+                            st.success(f"✅ Generated {len(test_cases)} QA pairs successfully!")
+
+        with col2:
+            st.subheader("🚀 2. Run Evaluation")
+            if st.session_state.loaded_test_set:
+                st.write(f"**Dataset status**: Loaded ({len(st.session_state.loaded_test_set)} cases)")
+                with st.expander("🔍 Preview Loaded QA Cases", expanded=False):
+                    import pandas as pd
+                    st.dataframe(pd.DataFrame(st.session_state.loaded_test_set), use_container_width=True)
+
+                eval_top_k = st.slider("Top-K Context Retrieval limit:", min_value=1, max_value=10, value=3, step=1, key="eval_top_k")
+                
+                if st.button("🔥 Run Evaluation Pass", type="primary", use_container_width=True):
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    try:
+                        from src.evaluation.rag_evaluator import RAGEvaluator
+                        evaluator = RAGEvaluator(llm_overrides=st.session_state.llm_overrides)
+                        
+                        # 1. Run RAG Pipeline (Retrieve contexts and generate responses)
+                        status_text.text("1/2 Running RAG pipelines (context retrieval & answer generation)...")
+                        progress_bar.progress(30)
+                        
+                        completed_dataset = evaluator.run_rag_inference(
+                            tenant_id=st.session_state.current_tenant,
+                            test_cases=st.session_state.loaded_test_set,
+                            top_k=eval_top_k
+                        )
+                        
+                        # 2. Run Ragas Metrics
+                        status_text.text("2/2 Calculating Ragas metrics (Faithfulness, Relevancy, Precision, Recall)...")
+                        progress_bar.progress(70)
+                        
+                        eval_res = evaluator.evaluate_dataset(completed_dataset)
+                        
+                        progress_bar.progress(100)
+                        status_text.empty()
+                        
+                        if eval_res.get("status") == "success":
+                            st.session_state.evaluation_results = eval_res
+                            st.success("🎉 RAG evaluation complete!")
+                        else:
+                            st.error(eval_res.get("message"))
+                    except Exception as e:
+                        st.error(f"❌ Evaluation failed: {str(e)}")
+            else:
+                st.info("ℹ️ Please load or generate a test dataset first in order to run evaluations.")
+
+        if st.session_state.evaluation_results:
+            st.markdown("---")
+            st.subheader("📈 3. Assessment Dashboard & Visualizations")
+            
+            scores = st.session_state.evaluation_results["scores"]
+            
+            # Metric cards
+            m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+            with m_col1:
+                st.metric("Faithfulness", f"{scores.get('faithfulness', 0.0):.2f}", help="Hallucination check: grounded in context")
+            with m_col2:
+                st.metric("Answer Relevance", f"{scores.get('answer_relevance', 0.0):.2f}", help="Relevancy to the query")
+            with m_col3:
+                st.metric("Context Precision", f"{scores.get('context_precision', 0.0):.2f}", help="Signal-to-noise ratio in context ranking")
+            with m_col4:
+                st.metric("Context Recall", f"{scores.get('context_recall', 0.0):.2f}", help="Coverage of ground truth in contexts")
+
+            # Metric descriptions in st.info format
+            with st.expander("📘 Detailed Metric Descriptions", expanded=False):
+                st.markdown(
+                    """
+                    *   **Faithfulness (Hallucination metric)**: Measures the factual consistency of the generated answer against the retrieved context. A higher score means fewer factual claims are made up out of thin air.
+                    *   **Answer Relevance**: Evaluates how closely the generated answer maps to the original question. If the answer is too verbose, repeats the query, or goes off-topic, this score drops.
+                    *   **Context Precision**: Assesses whether the retrieved contexts that contain the correct ground-truth answers are ranked at the top of the search results list.
+                    *   **Context Recall**: Measures the retrieval layer's ability to find all facts matching the ground truth. If the retrieval layer misses critical facts, this score is low.
+                    """
+                )
+
+            # Chart and breakdown
+            chart_col, data_col = st.columns([1, 1])
+            with chart_col:
+                import plotly.graph_objects as go
+                fig = go.Figure([
+                    go.Bar(
+                        x=["Faithfulness", "Answer Relevance", "Context Precision", "Context Recall"],
+                        y=[
+                            scores.get("faithfulness", 0.0),
+                            scores.get("answer_relevance", 0.0),
+                            scores.get("context_precision", 0.0),
+                            scores.get("context_recall", 0.0)
+                        ],
+                        marker_color=["#6366f1", "#4f46e5", "#4338ca", "#3730a3"]
+                    )
+                ])
+                fig.update_layout(
+                    title="Overall RAG System Performance Scores",
+                    yaxis_range=[0, 1],
+                    yaxis_title="Metric Score (0-1)",
+                    template="plotly_dark",
+                    margin=dict(l=40, r=40, t=40, b=40)
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                
+            with data_col:
+                st.write("**RAG Evaluation Parameters**")
+                st.caption(f"Tenant Context Boundary: `{st.session_state.current_tenant.upper()}`")
+                st.caption(f"Model Under Test: `{st.session_state.llm_overrides['DEFAULT_MODEL_ID']}`")
+                st.caption(f"Context retrieval limit (Top-K): `{eval_top_k}`")
+                st.write("")
+                st.write("**Evaluation Summary Guidance**")
+                # Dynamic suggestions based on scores
+                if scores.get("faithfulness", 1.0) < 0.8:
+                    st.warning("⚠️ **Low Faithfulness**: Model is generating facts not found in your context blocks. Consider increasing systemic system prompt grounding rules or checking source documents.")
+                if scores.get("context_recall", 1.0) < 0.8:
+                    st.warning("⚠️ **Low Context Recall**: The query engine failed to retrieve the necessary ground-truth facts. Try increasing Top-K retrieval limit or switching text splitter chunk size parameters.")
+                if scores.get("faithfulness", 0.0) >= 0.8 and scores.get("context_recall", 0.0) >= 0.8:
+                    st.success("✅ **Robust Pipeline Performance**: Your RAG pipeline exhibits high grounding accuracy and correct contextual coverage.")
+
+            st.write("**Detailed Row-by-Row Evaluation Metrics**")
+            import pandas as pd
+            raw_df = pd.DataFrame(st.session_state.evaluation_results["raw_dataframe"])
+            st.dataframe(raw_df, use_container_width=True)
+            
+            # Export / Download options for the logs
+            csv_data = raw_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download Detailed Evaluation Logs (CSV)",
+                data=csv_data,
+                file_name=f"rag_evaluation_logs_{st.session_state.current_tenant}.csv",
+                mime="text/csv",
+                help="Click here to download the row-by-row evaluation run metrics, contexts, and answers as a CSV file.",
+                use_container_width=True
+            )
+
+            # Benchmark reference guide
+            st.markdown("<br>", unsafe_allow_html=True)
+            with st.expander("📚 Reference Guide: How to Interpret RAG Benchmark Scores", expanded=False):
+                st.markdown(
+                    """
+                    ### 🎯 Performance Benchmarks Reference Table
+                    RAG metric scores are calculated on a scale from **0.00** to **1.00**:
+                    
+                    | Score Range | Performance Tier | Interpretation | Action Required |
+                    |---|---|---|---|
+                    | **0.85 – 1.00** | 🟢 **Production-Ready** | Exceptionally high quality. LLM is strictly grounded and context matches are accurate. | None. Maintain system parameters. |
+                    | **0.70 – 0.84** | 🟡 **Good / Tuneable** | Reliable, but exhibits minor gaps in fact coverage or slight irrelevant information. | Fine-tune chunk sizes, system prompts, or parameters. |
+                    | **< 0.70** | 🔴 **Warning / Action Required** | Unstable. Critical hallucinations, missing context information, or irrelevant responses. | Urgent adjustment of system rules or query engine parameters. |
+
+                    ### 🔄 Correlating the Metrics
+                    Evaluating a RAG system involves understanding how the retrieval layer (Qdrant) and generation layer (LLM) interact. You can find system bottlenecks by looking for these patterns:
+                    
+                    *   **Low Faithfulness (< 0.80) + High Context Recall (>= 0.80)**:
+                        *   *Diagnosis*: The retrieval engine successfully found the correct facts, but the LLM is **hallucinating** or ignoring context limitations.
+                        *   *Fix*: Increase system prompt grounding strictness or check if the prompt temperature setting is too high.
+                    *   **Low Context Recall (< 0.80)**:
+                        *   *Diagnosis*: The retrieval engine is **failing to fetch** the correct documents from Qdrant. The LLM cannot answer questions because it never receives the source data.
+                        *   *Fix*: Increase the **Top-K Context Retrieval limit** (retrieval depth) or check if your text splitting chunk size needs adjustment.
+                    *   **Low Answer Relevance (< 0.80)**:
+                        *   *Diagnosis*: The LLM's response does not directly address the question. The answers might be overly verbose, evasive, or contain copy-pasted details.
+                        *   *Fix*: Revise the system prompt instructions to mandate concise, directly mapped answers.
+                    *   **Low Context Precision (< 0.80)**:
+                        *   *Diagnosis*: The retrieval pipeline is pulling too much irrelevant noise/filler text along with the correct chunks, causing LLM confusion.
+                        *   *Fix*: Optimize semantic splitter embedding thresholds or implement a re-ranking model.
+                    """
+                )
+
     def run(self):
         self._inject_custom_css()
         
@@ -787,17 +1049,19 @@ class CoreOperationsCenterApp:
                     st.rerun()
         
         self.render_sidebar_status()
-        t_chat, t_query, t_summary, t_feed, t_admin = st.tabs([
+        t_chat, t_query, t_summary, t_feed, t_eval, t_admin = st.tabs([
             "💬 SandyGPT Conversational Workspace",
             "🔍 Grounded Query Workspace Playground", 
             "📝 Document Summarization Console",
             "📥 Document Processing Feed Panel", 
-            "📊 Tenant Space Administration"
+            "📊 RAG Assessment & Evaluation Console",
+            "🛠️ Tenant Space Administration"
         ])
         with t_chat: self.run_error_wrapper(self.render_sandygpt_tab)
         with t_query: self.run_error_wrapper(self.render_query_playground_tab)
         with t_summary: self.run_error_wrapper(self.render_summarization_tab)
         with t_feed: self.run_error_wrapper(self.render_data_feed_tab)
+        with t_eval: self.run_error_wrapper(self.render_rag_assessment_tab)
         with t_admin: self.run_error_wrapper(self.render_tenant_admin_tab)
 
     def run_error_wrapper(self, render_func):

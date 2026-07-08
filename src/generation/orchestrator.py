@@ -4,74 +4,46 @@ import urllib.request
 import urllib.error
 from typing import Dict, Any, List
 from src.config import Config
+from src.database.query_engine import MultiTenantQueryEngine
 
 import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
 
 class ContextOrchestrator:
     def __init__(self):
-        pass
-
-    def _get_query_vector(self, query_text: str) -> List[float]:
-        payload = {"inputs": [query_text]}
-        try:
-            req = urllib.request.Request(
-                Config.TEI_ENDPOINT, data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"}, method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=5) as response:
-                return json.loads(response.read().decode("utf-8"))[0]
-        except Exception:
-            return [0.0] * Config.VECTOR_DIMENSION
-
-    def _retrieve_context_from_qdrant(self, tenant_id: str, query_text: str, top_k: int) -> List[Dict[str, Any]]:
-        url = f"http://{Config.QDRANT_HOST}:{Config.QDRANT_PORT}/collections/{Config.COLLECTION_NAME}/points/search"
-        query_vector = self._get_query_vector(query_text)
-
-        payload = {
-            "vector": query_vector,
-            "limit": top_k,
-            "with_payload": True,
-            "with_vector": False,
-            "filter": {"must": [{"key": "tenant_id", "match": {"value": tenant_id}}]}
-        }
-        try:
-            req = urllib.request.Request(
-                url, data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"}, method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=5) as response:
-                return json.loads(response.read().decode("utf-8")).get("result", [])
-        except Exception:
-            return []
+        self.query_engine = MultiTenantQueryEngine()
 
     def generate_answer(self, tenant_id: str, target_adapter: str, user_query: str, temperature: float, top_k: int, llm_overrides: Dict[str, Any] = None) -> Dict[str, Any]:
         start_time = time.time()
-        points = self._retrieve_context_from_qdrant(tenant_id, user_query, top_k)
+        points = self.query_engine.retrieve_context(
+            query_str=user_query,
+            tenant_id=tenant_id,
+            limit=top_k
+        )
         
         context_chunks = []
         citations = []
         for pt in points:
             score = pt.get("score", 0.0)
-            payload_data = pt.get("payload", {})
-            text_content = payload_data.get("document_text", "")
+            text_content = pt.get("text", "")
             if text_content:
                 context_chunks.append(text_content)
                 citations.append({
-                    "source": payload_data.get("source_file", "unknown_source.pdf"),
-                    "page": payload_data.get("page_number", "N/A"),
+                    "source": pt.get("source_file", "unknown_source.pdf"),
+                    "page": pt.get("page_number", "N/A"),
                     "score": round(score, 4)
                 })
 
         flat_context = "\n---\n".join(context_chunks) if context_chunks else "NO VERIFIED CONTEXT DETECTED."
         
         system_instruction = (
-            "You are an elite enterprise core engine agent operating within a secure multi-tenant architecture.\n"
-            f"Your current operational domain context isolation group is: [TENANT: {tenant_id.upper()}]\n\n"
-            "STRICT GROUNDING REGIME:\n"
-            "1. Synthesize your answer using ONLY the explicit text context blocks provided below.\n"
-            "2. If context is insufficient, state: 'Information missing from current isolated partition data store.'\n"
-            "3. Do NOT utilize background parametric weights to extrapolate claims.\n\n"
+            "You are a strict QA engine. Your current tenant domain is: " f"[{tenant_id.upper()}]\n\n"
+            "INSTRUCTIONS:\n"
+            "1. Answer the query directly, concisely, and factually, relying ONLY on the isolated context blocks below.\n"
+            "2. Do NOT use conversational preambles (e.g., 'Based on the context...', 'According to the document...').\n"
+            "3. Do NOT extrapolate or assume any facts not directly written in the context.\n"
+            "4. If the provided context is insufficient to answer the query, respond ONLY with: "
+            "'Information missing from current isolated partition data store.'\n\n"
             f"--- ISOLATED CONTEXT PAYLOAD ---\n{flat_context}\n--------------------------------"
         )
 

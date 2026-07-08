@@ -35,19 +35,13 @@ class QdrantManager:
                 print(f"❌ Schema execution error: {error_msg}")
 
     def _create_tenant_payload_index(self):
-        url = f"{self.base_url}/index"
-        payload = {
-            "field_name": "tenant_id",
-            "field_schema": {"type": "keyword", "is_tenant": True}
-        }
         try:
-            req = urllib.request.Request(
-                url, data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"}, method="POST"
+            res = self.client.create_payload_index(
+                collection_name=Config.COLLECTION_NAME,
+                field_name="tenant_id",
+                field_schema={"type": "keyword", "is_tenant": True}
             )
-            with urllib.request.urlopen(req) as response:
-                res = json.loads(response.read().decode("utf-8"))
-                print(f"✅ HNSW tenant segmentation schema mapped: {res.get('status')}")
+            print(f"✅ HNSW tenant segmentation schema mapped: {res.status}")
         except Exception as e:
             print(f"❌ Index configuration fault: {str(e)}")
 

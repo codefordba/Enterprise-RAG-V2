@@ -5,44 +5,51 @@ A production-grade, highly scalable, multi-tenant Retrieval-Augmented Generation
 ---
 
 ## 🎯 Objective
-Enterprise-RAG-V2 resolves the three primary constraints of standard RAG architectures in corporate networks:
+Enterprise-RAG-V2 resolves the primary constraints of standard RAG architectures in corporate networks:
 1.  **Cross-Tenant Data Leakage**: Enforces strict departmental data boundaries (Finance, HR, Legal) inside a single vector pool using Qdrant HNSW payload keyword constraints, avoiding the administrative overhead of managing thousands of database collections.
 2.  **Structural Document Destruction**: Employs layout-aware visual element extraction (`pdfplumber`) to isolate grid balance sheets and borderless data blocks, mapping them into native Markdown grids before chunking.
-3.  **Credential & Configuration Exposure**: Integrates FIPS-compliant symmetric key encryption to store connection endpoints and API keys securely on disk, enabling on-the-fly model swapping.
+3.  **Document Lineage & Version Bleeding**: Implements a robust state-flagging version control system. It archives old document revisions while securely gating search queries to reference only the latest updates, preventing outdated data from contaminating model answers.
+4.  **Credential & Configuration Exposure**: Integrates FIPS-compliant symmetric key encryption to store connection endpoints and API keys securely on disk, enabling on-the-fly model swapping.
 
 ---
 
 ## 🛠️ The Tech Stack
-*   **Frontend & Ops Dashboard**: [Streamlit](https://streamlit.io/) (1.58+)
-*   **Vector Database**: [Qdrant](https://qdrant.tech/) (1.18+)
+*   **Frontend & Ops Dashboard**: [Streamlit](https://streamlit.io/) (1.35+)
+*   **Vector Database**: [Qdrant](https://qdrant.tech/) (1.9+)
 *   **Embeddings Compute Server**: HuggingFace [Text Embeddings Inference (TEI)](https://github.com/huggingface/text-embeddings-inference) (`BAAI/bge-large-en-v1.5`)
 *   **Structural Parsing**: [pdfplumber](https://github.com/jasonmc/pdfplumber) (layout element extraction)
 *   **Text Splitters**: [LangChain Experimental](https://github.com/langchain-ai/langchain) (Semantic Chunker)
 *   **Symmetric Encryption**: Python `cryptography` (FIPS-compliant Fernet AES-128 encryption)
 *   **Data Layout Parsing**: `pandas` & `openpyxl` (Excel spreadsheets indexing)
+*   **Benchmarking Framework**: [Ragas](https://github.com/explodinggradients/ragas) (0.1.7)
 
 ---
 
-## 🏛️ Features
+## 🏛️ Key System Modules & Features
 
-### 1. SandyGPT Conversational Workspace
-*   A ChatGPT-style conversational chat console.
-*   Enforces direct model dialogue (non-RAG) with adjustable parameters (temperature set to `0.7` for fluent dialog).
-*   Maintains conversation history isolated per tenant.
+### 1. Document Processing Panel (Layout-Aware Ingestion)
+*   **Layout-Aware PDF Element Extraction**: Automatically isolates grid tables and structures them into valid Markdown table syntax, maintaining column alignment.
+*   **Table-Preserved Semantic Text Splitting**: Uses LangChain's `SemanticChunker` (utilizing embedding distance thresholds) to group prose sentences semantically while bypassing splits for tabular elements to prevent grid data fragmentation.
+*   **Progress & Workflow UI Feedback**: Renders a dynamic real-time progress bar and phase status descriptions (e.g. *Phase 1: Deprecating old versions*, *Phase 2: Generating vector embeddings*) inside Streamlit.
 
-### 2. Grounded Query Playground
-*   Retrieval-scoped sandbox workspace utilizing tenant payload restrictions.
-*   Instructs the LLM under strict system grounding guidelines (prevents background weight hallucinations; answers only from context).
-*   Renders clickable citation audit cards linking directly to the source file, page number, and vector similarity ranking score.
+### 2. Document Lineage & Version Control System
+*   **Logical Lineage Decoupling**: Tracks documents by a logical `document_family` identifier (e.g. `leave_policy`), decoupling them from physical file uploads.
+*   **State Flagging (`is_latest`)**: Every newly ingested text chunk is indexed with the metadata property `"is_latest": true`.
+*   **Atomic Pre-Ingestion Deprecation**: Before writing a new version of a document, a scroll query finds all existing chunks for that tenant and family with `is_latest: true`, and performs a partial payload update flipping them to `false` (retaining older revisions for audit trails without cluttering active searches).
+*   **Deterministic Chunk Addressing (`uuid.uuid5`)**: Banned random UUIDv4 generation. Calculates point IDs deterministically via `uuid.uuid5` using a composite namespace seed string: `f"{tenant_id}_{document_family}_{document_version}_{chunk_index}"`. Re-uploading the exact same document version cleanly overwrites existing vectors instead of duplicating them.
 
-### 3. Document Processing Panel
-*   Layout-aware visual document ingestion supporting PDFs and Excel Workbooks (`.xlsx`, `.xls`).
-*   Extracts borderless spreadsheet matrices and formats them to Markdown grids, appending them to target semantic chunks.
-*   Has content hash checks to skip duplicate ingestion and lineage checks to purge old versions.
+### 3. Isolated Grounded Query Playground
+*   **Strict Query Gating**: The search retrieval engine enforces a mandatory payload metadata filter: `{"key": "is_latest", "match": {"value": true}}`. Outdated document versions are completely invisible to search passes and RAG inference, permanently preventing semantic bleeding.
+*   **Unified Client Integrations**: Leverages a centralized `MultiTenantQueryEngine` running the Qdrant SDK `query_points` API for all retrievals, synchronizing parameters across search, generation, and evaluation layers.
 
-### 4. Tenant Administration & Model Profiles Directory
-*   **On-The-Fly Swapping**: Allows registration of named connection profiles (local vLLM endpoint vs Cloud Gemini API) and saves them in encrypted format (`model_profiles.enc`) using a secure local key file (`.enc_key`).
-*   **Metadata Registry**: Persists active tenant maps in `tenant_registry.json` so tenant spaces are preserved across restarts.
+### 4. RAG Assessment & Evaluation Console
+*   **Automated Benchmarking**: Runs Ragas evaluation passes to compute standard metrics: **Faithfulness** (groundedness / hallucination check), **Answer Relevance**, **Context Precision** (ranking accuracy), and **Context Recall** (fact coverage).
+*   **Pre-Upload Verification**: Allows uploading custom ground-truth CSV test sets or generating synthetic test sets directly from the active vector index.
+*   **Exportable Logs**: Renders interactive, row-by-row metric dataframes and provides a download button to export the complete evaluation logs (inputs, contexts, answers, and scores) directly into CSV spreadsheets.
+
+### 5. SandyGPT Conversational Workspace & Tenant Administration
+*   A ChatGPT-style workspace for model dialogue (non-RAG) with tenant-isolated history.
+*   Allows registration of named connection profiles (local vLLM endpoint vs Cloud Gemini API) and saves them in encrypted format (`model_profiles.enc`) using a secure local key file (`.enc_key`).
 
 ---
 
