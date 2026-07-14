@@ -284,6 +284,14 @@ class CoreOperationsCenterApp:
                 unsafe_allow_html=True
             )
             
+            if not st.session_state.tenant_adapter_map:
+                st.warning("⚠️ No active workspaces found. Please register a tenant first in the Administration tab.")
+                st.session_state.current_tenant = None
+                st.markdown("<br><hr style='border-color: rgba(255,255,255,0.08);'>", unsafe_allow_html=True)
+                if st.button("🔄 Trigger Hard Refresh", use_container_width=True):
+                    st.rerun()
+                return
+            
             st.session_state.current_tenant = st.selectbox(
                 "Select active workspace focus:",
                 options=list(st.session_state.tenant_adapter_map.keys()),
@@ -336,7 +344,7 @@ class CoreOperationsCenterApp:
                 <div class="card-title">⚡ Embedding Core</div>
                 <div class="card-value">
                     <span class="status-pulse {t_dot}"></span>
-                    {":8080" if t_health else "OFFLINE"}
+                    {":8090" if t_health else "OFFLINE"}
                 </div>
             </div>
             <div class="telemetry-card">
@@ -373,80 +381,157 @@ class CoreOperationsCenterApp:
                         
         with del_col:
             st.subheader("🗑️ Deprovision Isolated Tenant Matrix")
-            target_del = st.selectbox("Select Target Tenant to Purge:", options=list(st.session_state.tenant_adapter_map.keys()))
-            if st.button("❌ Terminate Tenant Workspace", type="primary", use_container_width=True):
-                purge_payload = {"filter": {"must": [{"key": "tenant_id", "match": {"value": target_del}}]}}
-                try:
-                    urllib.request.urlopen(urllib.request.Request(
-                        f"http://{Config.QDRANT_HOST}:{Config.QDRANT_PORT}/collections/{Config.COLLECTION_NAME}/points/delete",
-                        data=json.dumps(purge_payload).encode("utf-8"), headers={"Content-Type":"application/json"}, method="POST"
-                    ))
-                except Exception:
-                    pass
-                del st.session_state.tenant_adapter_map[target_del]
-                SecureStorageManager.save_tenant_registry(st.session_state.tenant_adapter_map)
-                st.warning(f"💥 Workspace and all underlying vector footprints for [{target_del.upper()}] destroyed.")
-                st.rerun()
+            if not st.session_state.tenant_adapter_map:
+                st.info("No active tenant workspaces available to deprovision.")
+            else:
+                target_del = st.selectbox("Select Target Tenant to Purge:", options=list(st.session_state.tenant_adapter_map.keys()))
+                if st.button("❌ Terminate Tenant Workspace", type="primary", use_container_width=True):
+                    purge_payload = {"filter": {"must": [{"key": "tenant_id", "match": {"value": target_del}}]}}
+                    try:
+                        urllib.request.urlopen(urllib.request.Request(
+                            f"http://{Config.QDRANT_HOST}:{Config.QDRANT_PORT}/collections/{Config.COLLECTION_NAME}/points/delete",
+                            data=json.dumps(purge_payload).encode("utf-8"), headers={"Content-Type":"application/json"}, method="POST"
+                        ))
+                    except Exception:
+                        pass
+                    del st.session_state.tenant_adapter_map[target_del]
+                    SecureStorageManager.save_tenant_registry(st.session_state.tenant_adapter_map)
+                    st.warning(f"💥 Workspace and all underlying vector footprints for [{target_del.upper()}] destroyed.")
+                    st.rerun()
 
     def render_data_feed_tab(self):
         st.header("📥 Document & Spreadsheet Processing Panel")
+        if not st.session_state.current_tenant:
+            st.warning("⚠️ No active tenant workspace selected. Please go to the **🛠️ Tenant Space Administration** tab to register or select a tenant workspace first.")
+            return
         st.write(f"Target Cluster Workspace Boundary: **[{st.session_state.current_tenant.upper()}]**")
-        uploaded_file = st.file_uploader("Upload Target Document / Spreadsheet Assets:", type=["pdf", "xlsx", "xls"])
         
-        if uploaded_file is not None:
-            file_ext = uploaded_file.name.split(".")[-1].lower()
-            st.info(f"Asset Loaded: `{uploaded_file.name}` ({uploaded_file.size / 1024:.2f} KB)")
-            suggested_family = uploaded_file.name.split(".")[0].split("_v")[0].split("202")[0].strip("_").lower()
-            ui_family_key = st.text_input("📋 Document Lineage Identifier / Family Tracking Key (Logical Type):", value=suggested_family)
-            ui_document_version = st.text_input("📋 Document Version / Year (e.g. 2026, v1.0):", value="1.0").strip()
+        # Display persistent ingestion success/warning/error messages
+        if "last_ingest_message" in st.session_state and st.session_state.last_ingest_message:
+            msg_type = st.session_state.get("last_ingest_type", "success")
+            if msg_type == "success":
+                st.success(st.session_state.last_ingest_message)
+            elif msg_type == "warning":
+                st.warning(st.session_state.last_ingest_message)
+            elif msg_type == "error":
+                st.error(st.session_state.last_ingest_message)
+                
+        uploaded_files = st.file_uploader("Upload Target Document / Spreadsheet Assets:", type=["pdf", "xlsx", "xls"], accept_multiple_files=True)
+        
+        # Clear message when a new file list is loaded or changed
+        if uploaded_files:
+            file_names_str = ",".join(sorted([f.name for f in uploaded_files]))
+            if "uploaded_file_names_str" in st.session_state and st.session_state.uploaded_file_names_str != file_names_str:
+                st.session_state.last_ingest_message = None
+            st.session_state.uploaded_file_names_str = file_names_str
+        else:
+            if "uploaded_file_names_str" in st.session_state and st.session_state.uploaded_file_names_str:
+                st.session_state.last_ingest_message = None
+            st.session_state.uploaded_file_names_str = None
+            
+        if uploaded_files:
+            st.info(f"Loaded {len(uploaded_files)} asset(s).")
             
             # Retrieve list of existing documents in this tenant space
             pipeline = TenantIngestionPipeline(tenant_id=st.session_state.current_tenant)
             existing_docs = pipeline.get_tenant_documents()
             
-            if existing_docs:
-                replace_target = st.selectbox(
-                    "🔄 Select existing document lineage to overwrite (leave as 'New Document' to upload as new):",
-                    options=["New Document"] + existing_docs,
-                    help="Select a stale document lineage family from the database to mark as inactive and overwrite it with this version."
-                )
-            else:
-                replace_target = "New Document"
-
-            if st.button("⚡ Start Layout-Aware Vector Ingestion", type="primary"):
+            # Configurations list for each file
+            file_configs = {}
+            
+            for idx, file in enumerate(uploaded_files):
+                with st.expander(f"📄 Config for `{file.name}` ({file.size / 1024:.1f} KB)", expanded=(idx == 0)):
+                    suggested_family = file.name.split(".")[0].split("_v")[0].split("202")[0].strip("_").lower()
+                    col_fam, col_ver, col_rep = st.columns(3)
+                    with col_fam:
+                        fam_key = st.text_input(
+                            f"Family Tracking Key:",
+                            value=suggested_family,
+                            key=f"fam_{idx}_{file.name}"
+                        )
+                    with col_ver:
+                        ver_key = st.text_input(
+                            f"Version:",
+                            value="1.0",
+                            key=f"ver_{idx}_{file.name}"
+                        )
+                    with col_rep:
+                        if existing_docs:
+                            rep_target = st.selectbox(
+                                f"Overwrite Lineage:",
+                                options=["New Document"] + existing_docs,
+                                key=f"rep_{idx}_{file.name}",
+                                help="Select a stale document family from the database to mark as inactive and overwrite it with this version."
+                            )
+                        else:
+                            rep_target = "New Document"
+                    
+                    file_configs[file.name] = {
+                        "file": file,
+                        "family_key": fam_key,
+                        "version": ver_key,
+                        "replace_target": None if rep_target == "New Document" else rep_target
+                    }
+            
+            if st.button("⚡ Start Layout-Aware Vector Ingestion", type="primary", use_container_width=True):
                 progress_bar = st.progress(0.0)
                 status_text = st.empty()
                 
-                def update_ingest_progress(message: str, progress: float):
-                    status_text.markdown(f"**Current Ingestion Phase**: {message}")
-                    progress_bar.progress(progress)
+                success_msgs = []
+                warn_msgs = []
+                error_msgs = []
                 
-                try:
-                    status = pipeline.process_and_upsert(
-                        document_name=uploaded_file.name,
-                        file_source=uploaded_file,
-                        custom_family_key=ui_family_key,
-                        target_to_replace=None if replace_target == "New Document" else replace_target,
-                        document_version=ui_document_version,
-                        progress_callback=update_ingest_progress
-                    )
-                    status_text.empty()
-                    progress_bar.empty()
+                total_files = len(uploaded_files)
+                for f_idx, file in enumerate(uploaded_files):
+                    cfg = file_configs[file.name]
+                    status_text.markdown(f"**Ingesting asset {f_idx+1}/{total_files}**: `{file.name}`...")
                     
-                    if status == "skipped_duplicate":
-                        st.warning("ℹ️ System Event: Content match detected. Ingestion bypassed.")
-                    elif status == "no_valid_content":
-                        st.warning("⚠️ No usable records or layout elements discovered inside the uploaded asset.")
-                    elif status == "updated_version":
-                        st.success(f"🔄 Success! Existing asset '{uploaded_file.name if replace_target == 'New Document' else replace_target}' was found in the database. The stale version was purged, and the new updated version was ingested successfully.")
-                        st.rerun()
-                    elif status == "ingested_successfully":
-                        st.success(f"🎉 Success! Asset '{uploaded_file.name}' mapped into lineage tracking path [{ui_family_key.upper()}].")
-                        st.rerun()
-                except Exception as e:
-                    status_text.empty()
-                    progress_bar.empty()
-                    st.error(f"❌ Ingestion pipeline fault: {str(e)}")
+                    def update_ingest_progress(message: str, progress: float):
+                        # Overall progress calculation
+                        overall = (f_idx + progress) / total_files
+                        status_text.markdown(f"**Ingesting `{file.name}`**: {message}")
+                        progress_bar.progress(overall)
+                        
+                    try:
+                        status = pipeline.process_and_upsert(
+                            document_name=file.name,
+                            file_source=file,
+                            custom_family_key=cfg["family_key"],
+                            target_to_replace=cfg["replace_target"],
+                            document_version=cfg["version"],
+                            progress_callback=update_ingest_progress
+                        )
+                        
+                        if status == "skipped_duplicate":
+                            warn_msgs.append(f"ℹ️ `{file.name}`: Content match detected, ingestion bypassed.")
+                        elif status == "no_valid_content":
+                            warn_msgs.append(f"⚠️ `{file.name}`: No usable layout elements or text found.")
+                        elif status == "updated_version":
+                            dep_text = ""
+                            if pipeline.last_deprecation_count > 0:
+                                target_fam_disp = cfg["replace_target"] if cfg["replace_target"] else cfg["family_key"]
+                                dep_text = f" (Deprecated {pipeline.last_deprecation_count} previous chunks for family '{target_fam_disp}')."
+                            success_msgs.append(f"🔄 `{file.name}`: Overwrote lineage '{cfg['family_key']}' successfully.{dep_text}")
+                        elif status == "ingested_successfully":
+                            success_msgs.append(f"🎉 `{file.name}`: Ingested successfully under lineage path [{cfg['family_key'].upper()}].")
+                    except Exception as e:
+                        error_msgs.append(f"❌ `{file.name}` ingestion fault: {str(e)}")
+                
+                status_text.empty()
+                progress_bar.empty()
+                
+                # Combine results
+                all_results = success_msgs + warn_msgs + error_msgs
+                st.session_state.last_ingest_message = "\n\n".join(all_results)
+                
+                if error_msgs:
+                    st.session_state.last_ingest_type = "error"
+                elif warn_msgs and not success_msgs:
+                    st.session_state.last_ingest_type = "warning"
+                else:
+                    st.session_state.last_ingest_type = "success"
+                    
+                st.rerun()
 
     def render_summarization_tab(self):
         st.header("📝 Executive Document Summarization Console")
@@ -534,6 +619,9 @@ class CoreOperationsCenterApp:
 
     def render_query_playground_tab(self):
         st.header("🔍 Isolated Inference Console & Prompt Sandbox")
+        if not st.session_state.current_tenant:
+            st.warning("⚠️ No active tenant workspace selected. Please go to the **🛠️ Tenant Space Administration** tab to register or select a tenant workspace first.")
+            return
         st.write(f"Context Protection Isolation Mode: **[{st.session_state.current_tenant.upper()}]**")
         param_col1, param_col2 = st.columns(2)
         with param_col1:
@@ -583,6 +671,9 @@ class CoreOperationsCenterApp:
 
     def render_sandygpt_tab(self):
         st.header("💬 SandyGPT Conversational Workspace")
+        if not st.session_state.current_tenant:
+            st.warning("⚠️ No active tenant workspace selected. Please go to the **🛠️ Tenant Space Administration** tab to register or select a tenant workspace first.")
+            return
         st.write("SandyGPT is a direct GPT chat conversation interface (non-RAG mode).")
         
         tenant_id = st.session_state.current_tenant
@@ -634,6 +725,9 @@ class CoreOperationsCenterApp:
 
     def render_rag_assessment_tab(self):
         st.header("📊 RAG Assessment & Evaluation Console")
+        if not st.session_state.current_tenant:
+            st.warning("⚠️ No active tenant workspace selected. Please go to the **🛠️ Tenant Space Administration** tab to register or select a tenant workspace first.")
+            return
         st.markdown(
             """
             <div class="sidebar-section" style="margin-bottom: 1.5rem; background: rgba(99, 102, 241, 0.1); border-left: 4px solid #6366f1;">
@@ -1057,12 +1151,18 @@ class CoreOperationsCenterApp:
             "📊 RAG Assessment & Evaluation Console",
             "🛠️ Tenant Space Administration"
         ])
-        with t_chat: self.run_error_wrapper(self.render_sandygpt_tab)
-        with t_query: self.run_error_wrapper(self.render_query_playground_tab)
-        with t_summary: self.run_error_wrapper(self.render_summarization_tab)
-        with t_feed: self.run_error_wrapper(self.render_data_feed_tab)
-        with t_eval: self.run_error_wrapper(self.render_rag_assessment_tab)
-        with t_admin: self.run_error_wrapper(self.render_tenant_admin_tab)
+        with t_chat:
+            self.run_error_wrapper(self.render_sandygpt_tab)
+        with t_query:
+            self.run_error_wrapper(self.render_query_playground_tab)
+        with t_summary:
+            self.run_error_wrapper(self.render_summarization_tab)
+        with t_feed:
+            self.run_error_wrapper(self.render_data_feed_tab)
+        with t_eval:
+            self.run_error_wrapper(self.render_rag_assessment_tab)
+        with t_admin:
+            self.run_error_wrapper(self.render_tenant_admin_tab)
 
     def run_error_wrapper(self, render_func):
         try:

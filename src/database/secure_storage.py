@@ -38,11 +38,19 @@ class SecureStorageManager:
         if not os.path.exists(DATA_FILE):
             # Seed with default config from env variables as the first profile
             default_profile = {
+                "_active_profile": "Default Environment",
                 "Default Environment": {
                     "LLM_DEPLOYMENT_MODE": Config.LLM_DEPLOYMENT_MODE,
                     "LLM_API_BASE_URL": Config.LLM_API_BASE_URL,
                     "LLM_API_KEY": Config.LLM_API_KEY,
-                    "DEFAULT_MODEL_ID": Config.DEFAULT_MODEL_ID
+                    "DEFAULT_MODEL_ID": Config.DEFAULT_MODEL_ID,
+                    "QDRANT_URL": Config.QDRANT_BASE_URL or "",
+                    "EMBEDDING_SERVER_URL": Config.EMBEDDING_SERVER_URL or "",
+                    "RERANKER_SERVER_URL": Config.RERANKER_SERVER_URL or "",
+                    "VECTOR_TOP_K": Config.VECTOR_TOP_K,
+                    "RERANK_TOP_K": Config.RERANK_TOP_K,
+                    "RERANKER_SCORE_THRESHOLD": Config.RERANKER_SCORE_THRESHOLD,
+                    "PROVIDER_TYPE": "Cloud API" if Config.LLM_DEPLOYMENT_MODE == "CLOUD" else "vLLM"
                 }
             }
             cls.save_encrypted_profiles(default_profile)
@@ -80,3 +88,20 @@ class SecureStorageManager:
                 "finance_reasoning": "finance_reasoning",
                 "tech_support": "tech_support"
             }
+
+    EVAL_RUNS_FILE = "eval_runs.json"
+
+    @classmethod
+    def save_eval_runs(cls, runs: list):
+        with open(cls.EVAL_RUNS_FILE, "w") as f:
+            json.dump(runs, f, indent=4)
+
+    @classmethod
+    def load_eval_runs(cls) -> list:
+        if not os.path.exists(cls.EVAL_RUNS_FILE):
+            return []
+        try:
+            with open(cls.EVAL_RUNS_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return []

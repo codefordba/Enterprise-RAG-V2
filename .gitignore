@@ -25,3 +25,6 @@ sample_data/
 
 # VS Code
 .vscode/
+
+# Run state database
+eval_runs.json

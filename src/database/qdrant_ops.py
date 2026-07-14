@@ -6,8 +6,8 @@ from src.config import Config
 
 class QdrantManager:
     def __init__(self):
-        self.base_url = f"http://{Config.QDRANT_HOST}:{Config.QDRANT_PORT}/collections/{Config.COLLECTION_NAME}"
-        self.client = QdrantClient(host=Config.QDRANT_HOST, port=Config.QDRANT_PORT)
+        self.base_url = f"{Config.QDRANT_BASE_URL.rstrip('/')}/collections/{Config.COLLECTION_NAME}"
+        self.client = Config.get_qdrant_client()
 
     def initialize_schema(self):
         self.initialize_collection()

@@ -11,8 +11,9 @@ from src.processing.semantic_splitter import SemanticProcessingEngine
 class TenantIngestionPipeline:
     def __init__(self, tenant_id: str):
         self.tenant_id = tenant_id
-        self.client = QdrantClient(host=Config.QDRANT_HOST, port=Config.QDRANT_PORT)
+        self.client = Config.get_qdrant_client()
         self.semantic_engine = SemanticProcessingEngine()
+        self.last_deprecation_count = 0
 
     def _check_content_hash_exists(self, content_hash: str) -> bool:
         """Uses the Qdrant SDK to check if a document with the same content hash already exists for this tenant."""
@@ -63,7 +64,7 @@ class TenantIngestionPipeline:
                 ),
                 limit=1000,
                 with_payload=["document_family"],
-                with_vector=False
+                with_vectors=False
             )
             unique_families = set()
             for pt in points:
@@ -77,6 +78,7 @@ class TenantIngestionPipeline:
 
     def _deprecate_existing_versions(self, document_family: str):
         """Finds all active chunks for this family and tenant, and flips their is_latest flag to False."""
+        self.last_deprecation_count = 0
         try:
             points, _ = self.client.scroll(
                 collection_name=Config.COLLECTION_NAME,
@@ -99,6 +101,7 @@ class TenantIngestionPipeline:
                     points=point_ids
                 )
                 print(f"🔄 Deprecated {len(point_ids)} previous chunks for family '{document_family}'.")
+                self.last_deprecation_count = len(point_ids)
         except Exception as e:
             print(f"⚠️ Warning: Failed to deprecate previous document versions: {str(e)}")
 
@@ -198,11 +201,23 @@ class TenantIngestionPipeline:
             if progress_callback:
                 progress_callback("Finalizing payload structures and upserting vector points to Qdrant...", 0.9)
 
-            # 6. Upsert semantic points to Qdrant (which will now default to is_latest: True)
-            self.client.upsert(
-                collection_name=Config.COLLECTION_NAME,
-                points=qdrant_points
-            )
+            # 6. Upsert semantic points to Qdrant in batches of 50 with retries
+            import time
+            qdrant_batch_size = 50
+            for i in range(0, len(qdrant_points), qdrant_batch_size):
+                sub_points = qdrant_points[i : i + qdrant_batch_size]
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        self.client.upsert(
+                            collection_name=Config.COLLECTION_NAME,
+                            points=sub_points
+                        )
+                        break
+                    except Exception as e:
+                        if attempt == max_retries - 1:
+                            raise e
+                        time.sleep(1.0 * (attempt + 1))
 
             return "updated_version" if is_update else "ingested_successfully"
 
