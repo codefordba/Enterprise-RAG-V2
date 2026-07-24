@@ -57,86 +57,113 @@ The application uses a modern **decoupled React SPA frontend** and a **FastAPI b
 
 ---
 
-## 🐳 Containerized Quick Start (Docker Compose)
+## 🐳 Production Deployment & Containerization Guide
 
-Deploy the entire microservice ecosystem—including the FastAPI React UI, Qdrant, TEI Embeddings, and GPU CUDA Reranker—in a single command.
+This section explains how to run the Enterprise-RAG-V2 application using Docker and Docker Compose. The configuration is fully decoupled, allowing you to run the frontend-backend console independently and connect to your own existing services, or spin up the entire local infrastructure via Docker.
 
-### 1. Configure the Environment
-Copy the example environment file and secure your local workspace files:
-```bash
-cp .env.example .env
-mkdir -p qdrant_storage embedding_cache reranker_cache
-touch .enc_key model_profiles.enc tenant_registry.json eval_runs.json
-```
+### 📋 Prerequisites
 
-### 2. Build & Launch Containers
-Run the Docker Compose suite:
-```bash
-docker compose up -d --build
-```
-*   **FastAPI & React UI**: Exposed at `http://localhost:8000` (or the mapped host port).
-*   **Qdrant Console**: Exposed at `http://localhost:6333`.
-*   **Embedding Server**: Exposed at `http://localhost:8090`.
-*   **Cross-Encoder Reranker**: Exposed at `http://localhost:8081`.
-
-### 3. Verify Container Status
-```bash
-docker compose ps
-```
+Before running the application, ensure you have:
+1. **Docker & Docker Compose**: Installed and running (Docker Desktop or Docker Engine v20.10+ and Compose v2.0+).
+2. **System Resources**:
+   * **CPU-only mode**: Minimum 8 GB RAM (16 GB recommended) to host local Hugging Face TEI embedding/reranking servers.
+   * **GPU mode (Optional)**: Nvidia GPU with CUDA drivers and `nvidia-container-toolkit` set up if running GPU-accelerated reranking.
+3. **Credentials**: An API key for your LLM provider if utilizing cloud APIs (e.g. OpenAI, Gemini) or a running vLLM service URL.
 
 ---
 
-## 🛠️ Direct Docker Container Deployment (Manual)
+### 🚀 Setup & Launch Options
 
-If you prefer building and running the combined frontend/backend application image independently on a custom bridge network:
+Choose the scenario that matches your infrastructure deployment:
 
-### 1. Create a Shared Docker Network
-```bash
-docker network create --driver bridge llm-infra-net
+#### Scenario A: Run the Application & Connect to Existing/Host Services
+Use this setup if you already have Qdrant, Embedding, or Reranker services running directly on your host machine (outside Docker) or hosted on a remote server/cloud.
+
+1. **Configure Environment Variables**:
+   Copy the Docker environment template:
+   ```bash
+   cp .env.docker .env.docker
+   ```
+   Open `.env.docker` and configure the Scenario A variables (for host-local endpoints) or Scenario C variables (for remote endpoints). For services running on your local machine, use `host.docker.internal` as the address:
+   ```ini
+   QDRANT_HOST=host.docker.internal
+   QDRANT_PORT=6333
+   EMBEDDING_SERVER_URL=http://host.docker.internal:8090
+   RERANKER_SERVER_URL=http://host.docker.internal:8081
+   ```
+
+2. **Start the Application**:
+   Run Docker Compose to pull the pre-built image from Docker Hub and start the application:
+   ```bash
+   docker compose up -d
+   ```
+   *The container resolves the host-level services via the `host.docker.internal` gateway automatically.*
+
+---
+
+#### Scenario B: Run the Complete Ecosystem locally in Docker
+Use this setup to run the application along with isolated local containers for Qdrant, TEI Embeddings, and TEI Reranking.
+
+1. **Configure Environment Variables**:
+   Ensure Scenario B variables are active in your `.env.docker` file (uses container names for automatic resolution):
+   ```ini
+   QDRANT_HOST=rag-qdrant
+   QDRANT_PORT=6333
+   EMBEDDING_SERVER_URL=http://rag-embedding-server:8080
+   RERANKER_SERVER_URL=http://rag-reranker-server:80
+   ```
+
+2. **Launch the Infrastructure Services**:
+   Start the backing services (Qdrant, Embedding server, and Reranker):
+   ```bash
+   docker compose -f docker-compose.infra.yml --env-file .env.docker up -d
+   ```
+   *Note: This command will pull the containers and automatically download the required AI models (`bge-large-en-v1.5` and `bge-reranker-large`) into your local cache directories.*
+
+3. **Launch the Application**:
+   Start the application container, which connects to the running infrastructure containers over the virtual network bridge:
+   ```bash
+   docker compose up -d
+   ```
+
+---
+
+### 💾 Data Persistence & Volume Mounts
+
+The application's connection profiles, encryption keys, tenant definitions, and evaluation logs are persisted in a single folder to survive container restarts. 
+
+By default, the `docker-compose.yml` mounts a local directory named `./app_data` to `/app/data` inside the container:
+```yaml
+volumes:
+  - ./app_data:/app/data
 ```
+The application dynamically writes and reads the following files within this folder:
+* `.enc_key`: The symmetric key used for config encryption.
+* `model_profiles.enc`: Encrypted LLM deployment credentials and settings.
+* `tenant_registry.json`: Logical tenant keys mapping to vector scopes.
+* `eval_runs.json`: Historical logs of RAGAS assessment runs.
 
-### 2. Run Database & Inference Services
-```bash
-# Qdrant Database
-docker run -d \
-  --name qdrant-server \
-  --network llm-infra-net \
-  -p 6333:6333 \
-  -v $(pwd)/qdrant_storage:/qdrant/storage \
-  --restart unless-stopped \
-  qdrant/qdrant:latest
+To backup or migrate your RAG configurations, simply copy the `./app_data` folder.
 
-# BGE Embeddings compute node (CPU-only version)
-docker run -d \
-  --name embedding-server \
-  --network llm-infra-net \
-  -p 8090:80 \
-  -v $(pwd)/embedding_cache:/data \
-  --restart unless-stopped \
-  ghcr.io/huggingface/text-embeddings-inference:cpu-arm64-latest \
-  --model-id BAAI/bge-large-en-v1.5
-```
+---
 
-### 3. Build the Decoupled Image
-```bash
-docker build -t enterprise-rag-v2:latest .
-```
+### 🛠️ Developer Guide: Building & Pushing the Image
 
-### 4. Run the Decoupled Application Container
-```bash
-docker run -d \
-  --name enterprise-rag-app \
-  --network llm-infra-net \
-  -p 8000:8000 \
-  -v $(pwd)/.env:/app/.env \
-  -v $(pwd)/.enc_key:/app/.enc_key \
-  -v $(pwd)/model_profiles.enc:/app/model_profiles.enc \
-  -v $(pwd)/tenant_registry.json:/app/tenant_registry.json \
-  -v $(pwd)/eval_runs.json:/app/eval_runs.json \
-  -e QDRANT_HOST=qdrant-server \
-  -e QDRANT_PORT=6333 \
-  -e TEI_ENDPOINT=http://embedding-server:80/embed \
-  --restart unless-stopped \
-  enterprise-rag-v2:latest
-```
-Access the application directly at `http://localhost:8000`.
+To build the combined frontend/backend application image locally (e.g. after code modifications) and push it to your registry:
+
+1. **Build the Production Image**:
+   Uses the multi-stage build to compile React assets, package them with FastAPI, and clean up build overhead:
+   ```bash
+   docker build -t your-username/enterprise-rag-app:latest .
+   ```
+
+2. **Verify Locally**:
+   Run the newly built image to test before pushing:
+   ```bash
+   docker run -d -p 8000:8000 --env-file .env.docker -v $(pwd)/app_data:/app/data your-username/enterprise-rag-app:latest
+   ```
+
+3. **Push to Docker Hub**:
+   ```bash
+   docker push your-username/enterprise-rag-app:latest
+   ```
