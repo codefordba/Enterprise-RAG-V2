@@ -29,6 +29,46 @@ The application uses a modern **decoupled React SPA frontend** and a **FastAPI b
 
 ---
 
+## 🏛️ System Architecture & Data Flow
+
+Below is a detailed overview of the system architecture, showcasing the data flow from the user interface down to the vector database and inference engines:
+
+```mermaid
+graph TD
+    User([User / Analyst]) <--> ReactApp["React SPA Frontend<br>(Vite + TS)"]
+    ReactApp <--> FastAPI["FastAPI Control Plane<br>(Backend Server)"]
+    
+    subgraph Local / Remote Infra ["Backend & Inference Infrastructure"]
+        FastAPI <--> Qdrant[("Qdrant Vector DB<br>(Strict Tenant Partitioning)")]
+        FastAPI --> TEI_Embed["TEI Embedding Server<br>(BAAI/bge-large-en-v1.5)"]
+        FastAPI --> TEI_Rerank["TEI Reranker Server<br>(BAAI/bge-reranker-large)"]
+    end
+    
+    subgraph LLM Provider ["LLM Core Inference Layer"]
+        FastAPI <--> LLM{"LLM Engine<br>(Cloud API or On-Prem vLLM)"}
+    end
+```
+
+### Components Description
+
+1. **React SPA Frontend (TypeScript + Vite)**:
+   Offers a real-time console with latency telemetry, dynamic credentials configurations, system health monitoring, and a chat view displaying Time-to-First-Token (TTFT) performance stats. It streams tokens from the backend using Server-Sent Events (SSE).
+2. **FastAPI Control Plane**:
+   Acts as the central orchestrator. It handles layout-aware parsing (`pdfplumber`), chunking (`Langchain`), credential encryption, and context orchestration.
+3. **Qdrant Vector Database**:
+   Persists knowledge base vectors and handles logical tenant partitioning by applying filter queries against user metadata parameters at query time.
+4. **TEI BGE-Embedding Server**:
+   A high-performance Hugging Face Text Embeddings Inference server dedicated to generating vector embeddings for text chunks.
+5. **TEI Cross-Encoder Reranking Server**:
+   Implements a reranker (e.g. `bge-reranker-large`) to prioritize the most relevant retrieved passages, improving the signal-to-noise ratio in context extraction.
+6. **LLM Engine (Cloud or On-Prem)**:
+   Performs the final grounded generation.
+   * **Cloud-based**: Connects to external providers (such as Gemini, OpenAI) via API endpoints.
+   * **On-Premises**: Connects to open-source model instances hosted locally or in-house (such as vLLM).
+   * **LLM Setup Guide**: You can configure your own high-performance local LLM serving node by following the detailed guides in the [vLLM Inference Serving Guide](https://github.com/gpu-stack/AI-Infrastructure-Engineering/tree/main/phase2-vllm-serving).
+
+---
+
 ## 🏛️ New Production-Grade Features & Updates
 
 ### 1. Decoupled SSE Streaming Pipeline
@@ -109,15 +149,20 @@ Use this setup to run the application along with isolated local containers for Q
    ```ini
    QDRANT_HOST=rag-qdrant
    QDRANT_PORT=6333
-   EMBEDDING_SERVER_URL=http://rag-embedding-server:8080
+   EMBEDDING_SERVER_URL=http://rag-embedding-server:80
    RERANKER_SERVER_URL=http://rag-reranker-server:80
    ```
 
 2. **Launch the Infrastructure Services**:
-   Start the backing services (Qdrant, Embedding server, and Reranker):
-   ```bash
-   docker compose -f docker-compose.infra.yml --env-file .env.docker up -d
-   ```
+   Depending on your hardware capability, run one of the following commands:
+   * **For CPU-only setup**:
+     ```bash
+     docker compose -f docker-compose.infra.yml --env-file .env.docker up -d
+     ```
+   * **For GPU-accelerated setup (requires Nvidia GPU + CUDA)**:
+     ```bash
+     docker compose -f docker-compose.infra-gpu.yml --env-file .env.docker up -d
+     ```
    *Note: This command will pull the containers and automatically download the required AI models (`bge-large-en-v1.5` and `bge-reranker-large`) into your local cache directories.*
 
 3. **Launch the Application**:
