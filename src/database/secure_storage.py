@@ -3,9 +3,17 @@ import json
 from cryptography.fernet import Fernet
 from src.config import Config
 
-KEY_FILE = ".enc_key"
-DATA_FILE = "model_profiles.enc"
-REGISTRY_FILE = "tenant_registry.json"
+# Setup centralized data directory for volume persistence
+DATA_DIR = os.getenv("DATA_DIR", "/app/data")
+if not os.path.exists(DATA_DIR):
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+    except Exception:
+        DATA_DIR = "."  # Fallback to local directory if permission denied
+
+KEY_FILE = os.path.join(DATA_DIR, ".enc_key")
+DATA_FILE = os.path.join(DATA_DIR, "model_profiles.enc")
+REGISTRY_FILE = os.path.join(DATA_DIR, "tenant_registry.json")
 
 class SecureStorageManager:
     @staticmethod
@@ -89,7 +97,7 @@ class SecureStorageManager:
                 "tech_support": "tech_support"
             }
 
-    EVAL_RUNS_FILE = "eval_runs.json"
+    EVAL_RUNS_FILE = os.path.join(DATA_DIR, "eval_runs.json")
 
     @classmethod
     def save_eval_runs(cls, runs: list):

@@ -994,7 +994,7 @@ async def run_eval_pass(tenant_id: str, payload: Dict[str, Any]):
         if eval_res.get("status") == "success":
             scores = eval_res.get('scores', {})
             prod_status = determine_production_status(scores)
-            yield f"data: {json.dumps({
+            result_payload = {
                 'type': 'result',
                 'data': {
                     'status': 'success',
@@ -1005,7 +1005,8 @@ async def run_eval_pass(tenant_id: str, payload: Dict[str, Any]):
                     'rerank_top_k': Config.RERANK_TOP_K,
                     'reranker_score_threshold': Config.RERANKER_SCORE_THRESHOLD
                 }
-            })}\n\n"
+            }
+            yield f"data: {json.dumps(result_payload)}\n\n"
         else:
             yield f"data: {json.dumps({'type': 'result', 'data': eval_res})}\n\n"
         

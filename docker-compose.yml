@@ -1,53 +1,16 @@
+version: '3.8'
+
 services:
-  qdrant:
-    image: qdrant/qdrant:latest
-    container_name: rag-qdrant
+  app:
+    image: enterprise-rag-app-v2:latest  # Replace with your Docker Hub username/tag
+    container_name: enterprise-rag-app
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "8000:8000"
+    env_file:
+      - .env.docker
     volumes:
-      - /home/llm-infra-lab/qdrant_storage:/qdrant/storage
-    environment:
-      - QDRANT__SERVICE__ANALYTICS_ENABLED=false
+      # Mount a single local folder to persist all configurations, keys, and evaluation logs
+      - ./app_data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
-    networks:
-      - llm-infra-net
-
-  embedding-server:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
-    container_name: rag-embedding-server
-    ports:
-      - "8090:8080"
-    volumes:
-      - /home/llm-infra-lab/tei_models:/data
-    environment:
-      - OMP_NUM_THREADS=8
-      - MKL_NUM_THREADS=8
-      - HF_HUB_ENABLE_HF_TRANSFER=1
-    command: --model-id BAAI/bge-large-en-v1.5 --port 8080
-    restart: unless-stopped
-    networks:
-      - llm-infra-net
-
-  reranker-server:
-    image: ghcr.io/huggingface/text-embeddings-inference:latest
-    container_name: rag-reranker-server
-    ports:
-      - "8081:80"
-    volumes:
-      - /home/llm-infra-lab/tei_models:/data
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    command: --model-id BAAI/bge-reranker-large --port 80
-    restart: unless-stopped
-    networks:
-      - llm-infra-net
-
-networks:
-  llm-infra-net:
-    driver: bridge

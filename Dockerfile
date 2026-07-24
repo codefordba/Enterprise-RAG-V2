@@ -15,6 +15,9 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
+# Pre-create the directory for volume persistence
+RUN mkdir -p /app/data
+
 # Install minimal system utilities required for health checks
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \

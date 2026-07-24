@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: rag-qdrant
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "6334:6334"
+    volumes:
+      - ${QDRANT_STORAGE_PATH:-./qdrant_storage}:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__ANALYTICS_ENABLED=false
+    restart: unless-stopped
+    networks:
+      - llm-infra-net
+
+  embedding-server:
+    image: ghcr.io/huggingface/text-embeddings-inference:${EMBEDDING_IMAGE_TAG:-cpu-latest}
+    container_name: rag-embedding-server
+    ports:
+      - "8090:8080"
+    volumes:
+      - ${EMBEDDING_CACHE_PATH:-./embedding_cache}:/data
+    environment:
+      - OMP_NUM_THREADS=${EMBEDDING_NUM_THREADS:-8}
+      - MKL_NUM_THREADS=${EMBEDDING_NUM_THREADS:-8}
+      - HF_HUB_ENABLE_HF_TRANSFER=1
+    command: --model-id BAAI/bge-large-en-v1.5 --port 8080
+    restart: unless-stopped
+    networks:
+      - llm-infra-net
+
+  reranker-server:
+    image: ghcr.io/huggingface/text-embeddings-inference:${RERANKER_IMAGE_TAG:-cpu-latest}
+    container_name: rag-reranker-server
+    ports:
+      - "8081:80"
+    volumes:
+      - ${RERANKER_CACHE_PATH:-./reranker_cache}:/data
+    # CPU/GPU Fallback controls:
+    # If utilizing Nvidia GPUs, set RERANKER_IMAGE_TAG=latest in your .env.docker
+    # and uncomment the deploy configurations block below.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    command: --model-id BAAI/bge-reranker-large --port 80
+    restart: unless-stopped
+    networks:
+      - llm-infra-net
+
+networks:
+  llm-infra-net:
+    name: llm-infra-net
+    driver: bridge
